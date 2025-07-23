@@ -79,7 +79,70 @@ def _():
             except Exception as e:
                 print(f"⚠️ Failed to save tokens: {e}")
 
-        def load_tokens(self):
+        def validate_and_set_tokens(
+            self,
+            access_token,
+            id_token,
+            refresh_token,
+            expires_at=None,
+            source="unknown",
+        ):
+            """Validate tokens and set them if valid"""
+            if not (access_token and id_token and refresh_token):
+                return False
+
+            if expires_at is None:
+                expires_at = t0.time() + 3600
+
+            # Validate the id_token (always a JWT)
+            try:
+                claims = jwt.decode(id_token, options={"verify_signature": False})
+
+                # Set the tokens
+                self.access_token = access_token
+                self.id_token = id_token
+                self.refresh_token = refresh_token
+                self.expires_at = expires_at
+
+                user_email = claims.get("email", "user")
+
+                if source == "query_params":
+                    print(f"🌐 Loaded tokens from query parameters for {user_email}")
+                elif source == "file":
+                    print(f"📂 Loaded valid tokens for {user_email}")
+                    current_time = t0.time()
+                    print(
+                        f"🕐 Token expires in {int((expires_at - current_time) / 60)} minutes"
+                    )
+
+                return True
+
+            except Exception as e:
+                print(f"⚠️ Invalid id_token from {source}: {e}")
+                return False
+
+        def load_tokens_from_query_params(self):
+            """Load tokens from query parameters if available"""
+            try:
+                query_params = mo.query_params()
+
+                access_token = query_params.get("access_token")
+                id_token = query_params.get("id_token")
+                refresh_token = query_params.get("refresh_token")
+
+                if self.validate_and_set_tokens(
+                    access_token, id_token, refresh_token, source="query_params"
+                ):
+                    # Save tokens to file for future use
+                    self.save_tokens(expires_at=self.expires_at)
+                    return True
+
+                return False
+            except Exception as e:
+                print(f"⚠️ Failed to load tokens from query parameters: {e}")
+                return False
+
+        def load_tokens_from_file(self):
             """Load tokens from file if they exist and are valid"""
             if not os.path.exists(self.TOKEN_FILE):
                 return False
@@ -96,30 +159,13 @@ def _():
                     print("🕐 Saved tokens have expired")
                     return False
 
-                self.access_token = token_data.get("access_token")
-                self.id_token = token_data.get("id_token")
-                self.refresh_token = token_data.get("refresh_token")
-                self.expires_at = expires_at
+                access_token = token_data.get("access_token")
+                id_token = token_data.get("id_token")
+                refresh_token = token_data.get("refresh_token")
 
-                if self.id_token:
-                    # id_token is always a JWT, try to decode it
-                    try:
-                        claims = jwt.decode(
-                            self.id_token, options={"verify_signature": False}
-                        )
-                        print(
-                            f"📂 Loaded valid tokens for {claims.get('email', 'user')}"
-                        )
-                        print(
-                            f"🕐 Token expires in {int((expires_at - current_time) / 60)} minutes"
-                        )
-                        return True
-                    except Exception as e:
-                        print(f"⚠️ Saved id_token is invalid: {e}")
-                        return False
-                else:
-                    print("📂 Loaded access token (no id_token available)")
-                    return False
+                return self.validate_and_set_tokens(
+                    access_token, id_token, refresh_token, expires_at, source="file"
+                )
 
             except Exception as e:
                 print(f"⚠️ Failed to load tokens: {e}")
@@ -259,10 +305,16 @@ def _():
                 print(f"❌ Failed to clear tokens: {e}")
 
         def authenticate(self):
-            """Main authentication method - try to load tokens or do OAuth flow"""
-            if self.load_tokens():
+            """Main authentication method - try query params, then file, then OAuth flow"""
+            # First try to load from query parameters
+            if self.load_tokens_from_query_params():
+                print("✅ Using tokens from query parameters")
+                return True
+            # Then try to load from file
+            elif self.load_tokens_from_file():
                 print("✅ Using saved tokens - skipping OAuth flow")
                 return True
+            # Finally, do OAuth flow
             else:
                 self.do_oauth_flow()
                 return True

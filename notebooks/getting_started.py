@@ -31,7 +31,11 @@ def _():
     import urllib.parse
     import webbrowser
 
-    import jwt
+    HAS_JWT = True
+    try:
+        import jwt
+    except ImportError:
+        HAS_JWT = False
     import marimo as mo
     import requests
 
@@ -88,11 +92,19 @@ def _():
             source="unknown",
         ):
             """Validate tokens and set them if valid"""
-            if not (access_token and id_token and refresh_token):
+            if not (id_token and refresh_token):
                 return False
 
             if expires_at is None:
                 expires_at = t0.time() + 3600
+
+            if not HAS_JWT:
+                print("⚠️ JWT validation is not available - skipping token validation")
+                self.access_token = access_token
+                self.id_token = id_token
+                self.refresh_token = refresh_token
+                self.expires_at = expires_at
+                return True
 
             # Validate the id_token (always a JWT)
             try:
@@ -126,9 +138,26 @@ def _():
             try:
                 query_params = mo.query_params()
 
-                access_token = query_params.get("access_token")
-                id_token = query_params.get("id_token")
-                refresh_token = query_params.get("refresh_token")
+                # Function to decode tokens with our dot convention
+                def decode_token(token_param):
+                    if not token_param:
+                        return None
+                    # Handle multiple levels of URL encoding that might occur
+                    decoded = urllib.parse.unquote(token_param)
+                    # Handle case where it was double-encoded
+                    if "%25dot%25" in decoded:
+                        decoded = urllib.parse.unquote(decoded)
+                    # Replace our custom dot encoding with actual dots
+                    return decoded.replace("%dot%", ".")
+
+                # Use the new safe parameter names that marimo doesn't block
+                access_token = None  # We're not passing access token for now
+                id_token = decode_token(
+                    query_params.get("user_id")
+                )  # user_id contains the ID token
+                refresh_token = decode_token(
+                    query_params.get("user_refresh")
+                )  # user_refresh contains the refresh token
 
                 if self.validate_and_set_tokens(
                     access_token, id_token, refresh_token, source="query_params"
@@ -242,12 +271,12 @@ def _():
             self.access_token = tokens.get("access_token")
             self.id_token = tokens.get("id_token")
             self.refresh_token = tokens.get("refresh_token")
-            expires_in = tokens.get("expires_in", 3600)  # Default to 1 hour
+            expires_in = tokens.get("expires_in", 3600)
             self.expires_at = t0.time() + expires_in
 
-            # Use access_token for API calls, id_token for user info
-            claims = jwt.decode(self.id_token, options={"verify_signature": False})
-            print(f"You are now connected with {claims['email']}")
+            if HAS_JWT:
+                claims = jwt.decode(self.id_token, options={"verify_signature": False})
+                print(f"✅ You are now connected with {claims.get('email', 'unknown')}")
 
             if not self.refresh_token:
                 print(
@@ -312,7 +341,7 @@ def _():
                 return True
             # Then try to load from file
             elif self.load_tokens_from_file():
-                print("✅ Using saved tokens - skipping OAuth flow")
+                print("✅ Using tokens from file")
                 return True
             # Finally, do OAuth flow
             else:
